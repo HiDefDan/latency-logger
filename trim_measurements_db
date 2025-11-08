@@ -1,0 +1,26 @@
+#!/bin/bash
+# Usage: trim_measurements.sh <min_keep_id>
+# Example: trim_measurements.sh 4
+# Deletes all measurement records above the provided ID
+# and resets the AUTOINCREMENT counter to the highest remaining record.
+
+DB_PATH="/opt/latencylogger/db.sqlite3"
+KEEP_ID="$1"
+
+if [[ -z "$KEEP_ID" ]]; then
+  echo "Usage: $0 <min_keep_id>"
+  exit 1
+fi
+
+sqlite3 "$DB_PATH" <<EOF
+PRAGMA foreign_keys=off;
+
+DELETE FROM measurements WHERE id > $KEEP_ID;
+DELETE FROM sqlite_sequence WHERE name='measurements';
+UPDATE sqlite_sequence SET seq=(SELECT MAX(id) FROM measurements) WHERE name='measurements';
+
+PRAGMA foreign_keys=on;
+VACUUM;
+
+SELECT id, device_id, signal_format, rate, mean_raw_ms, date FROM measurements ORDER BY id;
+EOF
