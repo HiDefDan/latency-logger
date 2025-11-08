@@ -1,0 +1,33 @@
+# Node & system junk
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Build outputs
+/client/build/
+dist/
+coverage/
+*.log
+
+# Editor / tooling
+.vscode/
+.idea/
+*.code-workspace
+
+# Local environment
+.env
+*.sqlite3
+devices_backup.sqlite3
+backup_*.sqlite3
+trim_measurements_db
+setup-react-frontend.sh
+
+# Git metadata
+.git/
+.gitignore
+.gitattributes
+
+# System-specific
+*.swp
+*.bak

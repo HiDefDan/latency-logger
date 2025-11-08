@@ -1,0 +1,14 @@
+# Ensure consistent LF line endings in repo
+* text=auto eol=lf
+
+# Treat build outputs and binaries as binary
+*.sqlite3 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.mp4 binary
+*.mov binary
+
+# Keep diffing clean
+*.lock merge=union
