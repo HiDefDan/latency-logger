@@ -4,3 +4,4 @@ client/build/
 *.sqlite3
 *.log
 .env
+*.sh
