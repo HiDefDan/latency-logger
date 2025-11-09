@@ -30,6 +30,27 @@ function App() {
     return stored ? JSON.parse(stored) : ["AUX", "Destination", "Full Speed", "Other"];
   });
 
+  // Modal + table toggles
+const [showAddModal, setShowAddModal] = useState(false);
+const [showDevicesTable, setShowDevicesTable] = useState(false);
+
+const openAddModal = () => {
+  setEditingId(null);
+  setDeviceForm({
+    name: "",
+    category: "display",
+    input_carrier: "",
+    output_carrier: "",
+    genlockable: false,
+    notes: "",
+  });
+  setShowAddModal(true);
+};
+
+const closeAddModal = () => {
+  setShowAddModal(false);
+};
+
   // ---------- Fetch ----------
   const fetchDevices = async () => {
     const res = await fetch("/api/devices");
@@ -135,13 +156,27 @@ function App() {
   })
     .then((r) => r.json())
     .then((data) => {
-      setValidationResult(data);
-      setValidationMsg(
-        data.valid
-          ? `✅ Chain valid — DUT ${data.dut?.name || ""} ready.`
-          : `❌ ${data.reason}`
-      );
-    })
+  setValidationResult(data);
+  if (data.valid) {
+    const inC  = data.dut_config?.input_carrier  ?? "—";
+    const outC = data.dut_config?.output_carrier ?? "—";
+    const known = (data.known_total_ms ?? null) != null ? Number(data.known_total_ms).toFixed(1) : "—";
+    const chainMean = (data.chain_mean_ms ?? null) != null ? Number(data.chain_mean_ms).toFixed(1) : (mean || "—");
+    const pred = (data.inferred_per_device ?? null) != null ? Number(data.inferred_per_device).toFixed(1) : "—";
+
+    const dutRow = chainConfig[dutIndex] || {};
+setValidationMsg(
+  data.valid
+    ? `✅ Chain valid — DUT ${data.dut?.name || ""} ready. ` +
+      `Chain mean: ${mean ?? "?"} ms / Known total: ${data.known_total_ms ?? "?"} ms / ` +
+      `Predicted DUT: ${data.inferred_per_device ?? "?"} ms ` +
+      `(I/O: ${dutRow.input_carrier || "—"} → ${dutRow.output_carrier || "—"})`
+    : `❌ ${data.reason}`
+);
+  } else {
+    setValidationMsg(`❌ ${data.reason}`);
+  }
+})
     .catch((err) => setValidationMsg("⚠️ Validation error: " + err.message));
 }, [chainConfig, signalFormat, rate, dutIndex, chainComplete, readyToValidate]);
 
@@ -169,8 +204,10 @@ const handleSaveMeasurement = async () => {
   });
   const data = await res.json();
   if (!data.valid) return alert(`❌ ${data.reason}`);
-  alert(`💾 DUT ${data.dut.name} saved @ ${data.inferred_per_device} ms`);
-  fetchMeasurements();
+const inC  = data.dut_config?.input_carrier  ?? "—";
+const outC = data.dut_config?.output_carrier ?? "—";
+alert(`💾 DUT ${data.dut.name} (${inC}→${outC}) saved @ ${data.inferred_per_device} ms`);
+fetchMeasurements();
 };
  
 
@@ -179,14 +216,101 @@ const handleSaveMeasurement = async () => {
     <div style={{ fontFamily: "system-ui", padding: 16, maxWidth: 1100, margin: "auto" }}>
       <h2>Latency Logger</h2>
 
-      {/* --- Devices --- */}
-      <h3>Devices</h3>
-      <form onSubmit={handleAddOrUpdateDevice}
-        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8, marginBottom: 16 }}>
-        <input required placeholder="Device name" value={deviceForm.name}
-          onChange={e => setDeviceForm({ ...deviceForm, name: e.target.value })} />
-        <select value={deviceForm.category}
-          onChange={e => setDeviceForm({ ...deviceForm, category: e.target.value })}>
+    {/* --- Devices --- */}
+<h3>Devices</h3>
+
+<div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+  <button onClick={openAddModal}>➕ Add Device</button>
+  <button
+    onClick={() => setShowDevicesTable(v => !v)}
+    style={{ background: "#eee" }}
+    title="Toggle devices list"
+  >
+    {showDevicesTable ? "Hide Devices" : "Show Devices"}
+  </button>
+</div>
+
+{/* On-demand devices table */}
+{showDevicesTable && (
+  <table border="1" cellPadding="6" style={{ borderCollapse: "collapse", width: "100%", marginBottom: 20 }}>
+    <thead style={{ background: "#eee" }}>
+      <tr>
+        <th>ID</th><th>Name</th><th>Category</th><th>Input</th><th>Output</th>
+        <th>Genlock</th><th>Notes</th><th>Edit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {devices.map(d => (
+        <tr key={d.id}>
+          <td>{d.id}</td>
+          <td>{d.name}</td>
+          <td>{d.category}</td>
+          <td>{d.input_carrier || ""}</td>
+          <td>{d.output_carrier || ""}</td>
+          <td>{d.genlockable ? "Yes" : "No"}</td>
+          <td>{d.notes}</td>
+          <td>
+            <button
+              onClick={() => {
+                startEdit(d);
+                setShowAddModal(true);
+              }}
+            >
+              Edit
+            </button>
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+)}
+
+{/* Add/Edit Device Modal */}
+{showAddModal && (
+  <div
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.4)",
+      display: "grid",
+      placeItems: "center",
+      zIndex: 1000,
+    }}
+    role="dialog"
+    aria-modal="true"
+  >
+    <div
+      style={{
+        width: "min(800px, 92vw)",
+        background: "#fff",
+        borderRadius: 10,
+        boxShadow: "0 10px 30px rgba(0,0,0,0.2)",
+        padding: 16,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <h4 style={{ margin: 0 }}>{editingId ? "Edit Device" : "Add New Device"}</h4>
+        <button onClick={closeAddModal} style={{ background: "#eee" }}>✕</button>
+      </div>
+
+      <form
+        onSubmit={async (e) => {
+          await handleAddOrUpdateDevice(e);
+          closeAddModal();
+        }}
+        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}
+      >
+        <input
+          required
+          placeholder="Device name"
+          value={deviceForm.name}
+          onChange={e => setDeviceForm({ ...deviceForm, name: e.target.value })}
+        />
+
+        <select
+          value={deviceForm.category}
+          onChange={e => setDeviceForm({ ...deviceForm, category: e.target.value })}
+        >
           <option value="tester">Tester</option>
           <option value="converter">Converter</option>
           <option value="processor">Processor</option>
@@ -194,33 +318,54 @@ const handleSaveMeasurement = async () => {
           <option value="media server">Media Server</option>
           <option value="other">Other</option>
         </select>
-        <input placeholder="Input carrier" value={deviceForm.input_carrier}
-          onChange={e => setDeviceForm({ ...deviceForm, input_carrier: e.target.value })} />
-        <input placeholder="Output carrier" value={deviceForm.output_carrier}
-          onChange={e => setDeviceForm({ ...deviceForm, output_carrier: e.target.value })} />
-        <input placeholder="Notes" value={deviceForm.notes}
-          onChange={e => setDeviceForm({ ...deviceForm, notes: e.target.value })} />
-        <label><input type="checkbox" checked={deviceForm.genlockable}
-          onChange={e => setDeviceForm({ ...deviceForm, genlockable: e.target.checked })} /> Genlockable</label>
-        <button type="submit">{editingId ? "Update" : "Add"}</button>
-        {editingId && <button type="button" onClick={cancelEdit}>Cancel</button>}
-      </form>
 
-      <table border="1" cellPadding="6" style={{ borderCollapse: "collapse", width: "100%", marginBottom: 20 }}>
-        <thead style={{ background: "#eee" }}>
-          <tr><th>ID</th><th>Name</th><th>Category</th><th>Input</th><th>Output</th><th>Genlock</th><th>Notes</th><th>Edit</th></tr>
-        </thead>
-        <tbody>
-          {devices.map(d => (
-            <tr key={d.id}>
-              <td>{d.id}</td><td>{d.name}</td><td>{d.category}</td>
-              <td>{d.input_carrier}</td><td>{d.output_carrier}</td>
-              <td>{d.genlockable ? "Yes" : "No"}</td><td>{d.notes}</td>
-              <td><button onClick={() => startEdit(d)}>Edit</button></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        <input
+          placeholder="Input carrier (comma-separated)"
+          value={deviceForm.input_carrier}
+          onChange={e => setDeviceForm({ ...deviceForm, input_carrier: e.target.value })}
+        />
+        <input
+          placeholder="Output carrier (comma-separated)"
+          value={deviceForm.output_carrier}
+          onChange={e => setDeviceForm({ ...deviceForm, output_carrier: e.target.value })}
+        />
+
+        <input
+          placeholder="Notes"
+          value={deviceForm.notes}
+          onChange={e => setDeviceForm({ ...deviceForm, notes: e.target.value })}
+        />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={deviceForm.genlockable}
+            onChange={e => setDeviceForm({ ...deviceForm, genlockable: e.target.checked })}
+          />
+          Genlockable
+        </label>
+
+        <div style={{ display: "flex", gap: 8, gridColumn: "1 / -1" }}>
+          <button type="submit">
+            {editingId ? "Update Device" : "Add Device"}
+          </button>
+          {editingId && (
+            <button
+              type="button"
+              onClick={() => {
+                cancelEdit();
+                closeAddModal();
+              }}
+              style={{ background: "#eee" }}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  </div>
+)}
 
       {/* --- Chain Builder --- */}
       <h3>New Test (Guided Chain)</h3>
@@ -341,17 +486,29 @@ const handleSaveMeasurement = async () => {
       <h3 style={{ marginTop: 24 }}>Measurements</h3>
       <table border="1" cellPadding="6" style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead style={{ background: "#eee" }}>
-          <tr><th>ID</th><th>Device</th><th>Format</th><th>Rate</th><th>Mode</th><th>Genlock</th><th>T1</th><th>T2</th><th>T3</th><th>Mean (ms)</th><th>Date</th></tr>
-        </thead>
+          <tr>
+  <th>ID</th><th>Device</th><th>Format</th><th>Rate</th>
+  <th>IN</th><th>OUT</th>
+  <th>Mode</th><th>Genlock</th><th>T1</th><th>T2</th><th>T3</th><th>Mean (ms)</th><th>Date</th>
+</tr>
+</thead>
         <tbody>
           {measurements.map(m => (
             <tr key={m.id}>
-              <td>{m.id}</td><td>{m.device_name}</td><td>{m.signal_format}</td><td>{m.rate}</td>
-              <td>{m.mode}</td><td>{m.ref === "Genlock" ? "Yes" : "No"}</td>
-              <td>{m.test1}</td><td>{m.test2}</td><td>{m.test3}</td>
-              <td>{m.mean_raw_ms < 0.1 ? "<0.1" : Number(m.mean_raw_ms).toFixed(1)}</td>
-              <td>{new Date(m.date).toLocaleString()}</td>
-            </tr>
+  <td>{m.id}</td>
+  <td>{m.device_name}</td>
+  <td>{m.signal_format}</td>
+  <td>{m.rate}</td>
+  <td>{m.input_carrier || ""}</td>
+  <td>{m.output_carrier || ""}</td>
+  <td>{m.mode}</td>
+  <td>{m.ref === "Genlock" ? "Yes" : "No"}</td>
+  <td>{m.test1}</td>
+  <td>{m.test2}</td>
+  <td>{m.test3}</td>
+  <td>{m.mean_raw_ms < 0.1 ? "<0.1" : Number(m.mean_raw_ms).toFixed(1)}</td>
+  <td>{new Date(m.date).toLocaleString()}</td>
+</tr>
           ))}
         </tbody>
       </table>

@@ -34,6 +34,17 @@ await db.exec(`
   );
 `);
 
+// --- One-time safe migrations for new columns ---
+const cols = await db.all(`PRAGMA table_info('measurements')`);
+const hasInputCarrier = cols.some((c) => c.name === "input_carrier");
+const hasOutputCarrier = cols.some((c) => c.name === "output_carrier");
+if (!hasInputCarrier) {
+  await db.exec(`ALTER TABLE measurements ADD COLUMN input_carrier TEXT;`);
+}
+if (!hasOutputCarrier) {
+  await db.exec(`ALTER TABLE measurements ADD COLUMN output_carrier TEXT;`);
+}
+
 // ---------- DEVICES ----------
 app.get("/api/devices", async (_req, res) => {
   const rows = await db.all("SELECT * FROM devices ORDER BY name;");
@@ -55,7 +66,15 @@ app.post("/api/devices", async (req, res) => {
     const result = await db.run(
       `INSERT INTO devices (name, category, input_carrier, output_carrier, role, genlockable, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [name, category, input_carrier, output_carrier, role, genlockable ? 1 : 0, notes]
+      [
+        name,
+        category,
+        input_carrier,
+        output_carrier,
+        role ?? null,
+        genlockable ? 1 : 0,
+        notes ?? null,
+      ]
     );
 
     res.json({ id: result.lastID });
@@ -71,17 +90,25 @@ app.put("/api/devices/:id", async (req, res) => {
     category,
     input_carrier,
     output_carrier,
-    direction,
-    type,
+    role,
     genlockable,
     notes,
   } = req.body;
   await db.run(
-  `UPDATE devices
-     SET name=?, category=?, input_carrier=?, output_carrier=?, role=?, genlockable=?, notes=?
-   WHERE id=?`,
-  [name, category, input_carrier, output_carrier, role, genlockable ? 1 : 0, notes, req.params.id]
-);
+    `UPDATE devices
+       SET name=?, category=?, input_carrier=?, output_carrier=?, role=?, genlockable=?, notes=?
+     WHERE id=?`,
+    [
+      name,
+      category,
+      input_carrier,
+      output_carrier,
+      role ?? null,
+      genlockable ? 1 : 0,
+      notes ?? null,
+      req.params.id,
+    ]
+  );
   res.json({ updated: true });
 });
 
@@ -98,26 +125,41 @@ app.get("/api/measurements", async (_req, res) => {
 
 app.post("/api/measurements", async (req, res) => {
   try {
-    console.log("DEBUG /api/measurements payload:", req.body);
+    const {
+      device_id,
+      signal_format,
+      rate,
+      test1,
+      test2,
+      test3,
+      ref,
+      mode,
+      input_carrier,
+      output_carrier,
+    } = req.body;
 
-    const { device_id, signal_format, rate, test1, test2, test3, ref, mode } = req.body;
-
-    const tests = [test1, test2, test3].map(Number).filter(n => !isNaN(n));
+    const tests = [test1, test2, test3].map(Number).filter((n) => !isNaN(n));
     const mean_raw_ms = tests.length
       ? parseFloat((tests.reduce((a, b) => a + b, 0) / tests.length).toFixed(1))
       : 0.0;
 
-    console.log("→ Computed mean_raw_ms:", mean_raw_ms);
-
-    // Check duplicate (allow for floating-point variance)
+    // Dedupe considers I/O carriers
     const existing = await db.get(
       `SELECT id, mean_raw_ms FROM measurements
-       WHERE device_id=? AND signal_format=? AND ABS(rate - ?) < 0.01 AND mode=? AND ref=?`,
-      [device_id, signal_format, rate, mode, ref]
+       WHERE device_id=? AND signal_format=? AND ABS(rate - ?) < 0.01
+         AND mode=?
+         AND ifnull(input_carrier,'') = ifnull(?, '')
+         AND ifnull(output_carrier,'') = ifnull(?, '')`,
+      [
+        device_id,
+        signal_format,
+        rate,
+        mode || "Inferred",
+        input_carrier || null,
+        output_carrier || null,
+      ]
     );
-
     if (existing && Math.abs(existing.mean_raw_ms - mean_raw_ms) < 0.05) {
-      console.log("→ Duplicate ignored");
       return res.json({
         inserted: false,
         duplicate: true,
@@ -128,12 +170,25 @@ app.post("/api/measurements", async (req, res) => {
 
     const result = await db.run(
       `INSERT INTO measurements
-         (device_id, signal_format, rate, test1, test2, test3, mean_raw_ms, ref, mode, date)
-       VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
-      [device_id, signal_format, rate, test1, test2, test3, mean_raw_ms, ref, mode]
+         (device_id, signal_format, rate,
+          test1, test2, test3, mean_raw_ms,
+          ref, mode, input_carrier, output_carrier, date)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+      [
+        device_id,
+        signal_format,
+        rate,
+        test1 ?? null,
+        test2 ?? null,
+        test3 ?? null,
+        mean_raw_ms,
+        ref || null,
+        mode || "Manual",
+        input_carrier || null,
+        output_carrier || null,
+      ]
     );
 
-    console.log("→ Insert successful, id:", result.lastID);
     res.json({
       inserted: true,
       duplicate: false,
@@ -146,15 +201,12 @@ app.post("/api/measurements", async (req, res) => {
   }
 });
 
-
-
 // ---------- CHAINS ----------
 app.post("/api/chains", async (req, res) => {
   const { name, device_ids } = req.body;
   if (!device_ids?.length)
     return res.status(400).json({ error: "device_ids array required" });
 
-  // For each device, find its most recent mean_raw_ms
   let total = 0;
   for (const id of device_ids) {
     const row = await db.get(
@@ -186,32 +238,30 @@ app.post("/api/chain-validate-structured", async (req, res) => {
       return res.json({ valid: false, reason: "No devices in chain" });
     }
 
-    // Normalize booleans coming from the client
-    const parsedDevices = chain_devices.map(d => ({
+    const parsedDevices = chain_devices.map((d) => ({
       ...d,
-      is_dut: d.is_dut === true || d.is_dut === "true" || d.is_dut === 1
+      is_dut: d.is_dut === true || d.is_dut === "true" || d.is_dut === 1,
     }));
 
-    // Find DUT
-    const dut = parsedDevices.find(d => d.is_dut);
+    const dut = parsedDevices.find((d) => d.is_dut);
     if (!dut) {
       console.error("❌ structured-validate: no DUT in", parsedDevices);
       return res.json({ valid: false, reason: "No DUT specified" });
     }
 
-    // Core IDs / placeholders
-    const device_ids = parsedDevices.map(d => d.device_id);
+    const device_ids = parsedDevices.map((d) => d.device_id);
     const placeholders = device_ids.map(() => "?").join(",");
 
-    // Metadata
     const allDevices = await db.all(
       `SELECT id, name, category FROM devices WHERE id IN (${placeholders})`,
       device_ids
     );
-    const metaById = Object.fromEntries(allDevices.map(d => [d.id, d]));
+    const metaById = Object.fromEntries(allDevices.map((d) => [d.id, d]));
 
-    // Sink = last display in chain order
-    const sink = [...device_ids].reverse().map(id => metaById[id]).find(d => d && d.category === "display");
+    const sink = [...device_ids]
+      .reverse()
+      .map((id) => metaById[id])
+      .find((d) => d && d.category === "display");
 
     console.log("CHAIN VALIDATION DEBUG →");
     console.log("ordered ids:", device_ids);
@@ -219,30 +269,38 @@ app.post("/api/chain-validate-structured", async (req, res) => {
     console.log("dut:", dut);
 
     if (!sink) {
-      return res.json({ valid: false, reason: "Chain must include a display (sink)" });
+      return res.json({
+        valid: false,
+        reason: "Chain must include a display (sink)",
+      });
     }
 
-    // Sink must have known reading for this format/rate
     const sinkKnown = await db.get(
       `SELECT AVG(mean_raw_ms) AS mean
          FROM measurements
         WHERE device_id=? AND signal_format=? AND ABS(rate - ?) < 0.01`,
       [sink.id, signal_format, rate]
     );
-    if (!sinkKnown?.mean) {
+
+    const sinkBootstrap = !sinkKnown?.mean && dut.device_id === sink.id;
+    if (!sinkKnown?.mean && !sinkBootstrap) {
       return res.json({
         valid: false,
         reason: `Display ${sink.name} has no known measurement for ${signal_format}@${rate}`,
       });
     }
 
-    // Known map: sink + testers + other knowns (excluding DUT)
-    const knownMap = { [sink.id]: sinkKnown.mean };
-    const testers = await db.all(
+    const knownMap = {};
+
+    const testerRows = await db.all(
       `SELECT id FROM devices WHERE id IN (${placeholders}) AND category='tester'`,
       device_ids
     );
-    testers.forEach(t => (knownMap[t.id] = 0));
+    testerRows.forEach((t) => (knownMap[t.id] = 0));
+
+    if (sinkKnown?.mean != null) {
+      knownMap[sink.id] = sinkKnown.mean;
+    }
 
     const knownRows = await db.all(
       `SELECT device_id, AVG(mean_raw_ms) AS mean
@@ -253,19 +311,22 @@ app.post("/api/chain-validate-structured", async (req, res) => {
       [...device_ids, signal_format, rate]
     );
     for (const r of knownRows) {
-      if (r.device_id !== dut.device_id && !(r.device_id in knownMap) && r.mean != null) {
+      if (
+        r.device_id !== dut.device_id &&
+        !(r.device_id in knownMap) &&
+        r.mean != null
+      ) {
         knownMap[r.device_id] = r.mean;
       }
     }
 
     const knownTotal = Object.values(knownMap).reduce((a, b) => a + b, 0);
-    const unknownIds = device_ids.filter(id => !(id in knownMap));
+    const unknownIds = device_ids.filter((id) => !(id in knownMap));
 
     console.log("knownMap:", knownMap);
     console.log("knownTotal:", knownTotal);
     console.log("unknownIds:", unknownIds);
 
-    // If no mean provided, this is a validation-only pass
     const hasMean = Number.isFinite(parseFloat(chain_mean_ms));
     if (!hasMean) {
       return res.json({
@@ -273,44 +334,64 @@ app.post("/api/chain-validate-structured", async (req, res) => {
         message: "Chain valid (validation-only)",
         dut: metaById[dut.device_id],
         known_total_ms: knownTotal,
-        sink_device: { id: sink.id, name: sink.name, mean: sinkKnown.mean },
+        sink_device: {
+          id: sink.id,
+          name: sink.name,
+          mean: sinkKnown?.mean ?? null,
+        },
         inferred_per_device: null,
-        chain_mean_ms: null
+        chain_mean_ms: null,
       });
     }
 
-    // Compute inferred
     const chainMean = parseFloat(Number(chain_mean_ms).toFixed(1));
-    const divisor = Math.max(1, unknownIds.length); // never divide by 0
+    const divisor = Math.max(1, unknownIds.length);
     const inferred = (chainMean - knownTotal) / divisor;
-    const inferredRounded = inferred <= 0 ? 0.1 : parseFloat(inferred.toFixed(1));
+    const inferredRounded =
+      inferred <= 0 ? 0.1 : parseFloat(inferred.toFixed(1));
 
     console.log(`→ chain_mean_ms: ${chainMean}`);
     console.log(`→ knownTotal: ${knownTotal}`);
     console.log(`→ inferredRounded: ${inferredRounded}`);
 
-    // Dedup exact (same mode/rate/format) for DUT
+    // Dedupe exact (same mode/rate/format + I/O carriers)
     const existing = await db.get(
       `SELECT id FROM measurements
-        WHERE device_id=? AND signal_format=? AND ABS(rate - ?) < 0.01 AND mode=?`,
-      [dut.device_id, signal_format, rate, dut.mode || "Inferred"]
+         WHERE device_id=? AND signal_format=? AND ABS(rate - ?) < 0.01
+           AND mode=? AND input_carrier IS ? AND output_carrier IS ?`,
+      [
+        dut.device_id,
+        signal_format,
+        rate,
+        dut.mode || "Inferred",
+        dut.input_carrier || null,
+        dut.output_carrier || null,
+      ]
     );
     if (existing) {
       return res.json({
         valid: true,
         message: "Duplicate measurement ignored",
         dut: metaById[dut.device_id],
+        dut_config: {
+          input_carrier: dut.input_carrier || null,
+          output_carrier: dut.output_carrier || null,
+          mode: dut.mode || "Inferred",
+          genlock_used: !!dut.genlock_used,
+        },
         chain_mean_ms: chainMean,
         known_total_ms: knownTotal,
-        inferred_per_device: inferredRounded
+        inferred_per_device: inferredRounded,
       });
     }
 
-    // Insert DUT row with concrete T1/T2/T3
-    const result = await db.run(
+    // Insert DUT with I/O carriers
+    const insert = await db.run(
       `INSERT INTO measurements
-         (device_id, signal_format, rate, test1, test2, test3, mean_raw_ms, ref, mode, date)
-       VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+         (device_id, signal_format, rate,
+          test1, test2, test3, mean_raw_ms,
+          ref, mode, input_carrier, output_carrier, date)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
       [
         dut.device_id,
         signal_format,
@@ -321,6 +402,8 @@ app.post("/api/chain-validate-structured", async (req, res) => {
         inferredRounded,
         dut.genlock_used ? "Genlock" : "N/A",
         dut.mode || "Inferred",
+        dut.input_carrier || null,
+        dut.output_carrier || null,
       ]
     );
 
@@ -330,10 +413,16 @@ app.post("/api/chain-validate-structured", async (req, res) => {
       valid: true,
       message: "Chain validated and DUT measurement saved",
       dut: metaById[dut.device_id],
+      dut_config: {
+        input_carrier: dut.input_carrier || null,
+        output_carrier: dut.output_carrier || null,
+        mode: dut.mode || "Inferred",
+        genlock_used: !!dut.genlock_used,
+      },
       chain_mean_ms: chainMean,
       known_total_ms: knownTotal,
       inferred_per_device: inferredRounded,
-      id: result.lastID
+      id: insert.lastID,
     });
   } catch (err) {
     console.error("!! ERROR in /api/chain-validate-structured:", err);

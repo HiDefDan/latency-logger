@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [0.10.0] – 2025-11-09
+### Added
+- Support for per-measurement `input_carrier` and `output_carrier` fields  
+  (stored, displayed, and included in chain validation)
+- Enhanced `/api/chain-validate-structured` response now returns `dut_config`  
+  with I/O carrier and mode for banner display
+- Validation banner now clearly shows `(I/O: X → Y)` for DUT
+- Devices table toggled via button; Add/Edit modal now overlays cleanly
+
+### Fixed
+- Duplicate measurement handling corrected to consider I/O carriers  
+- Removed redundant declarations and overlapping `testers` variable
+- Cleaned legacy code paths and ensured schema auto-migration for new columns
 
 ## [0.9.0] — 2025-11-08
 ### Added
